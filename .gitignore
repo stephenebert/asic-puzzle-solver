@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+vendor/
+__pycache__/
+*.py[cod]
+
+build/*
+!build/solution.json
+!build/regions.json

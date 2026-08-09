@@ -1,5 +1,21 @@
 # ASIC Reverse-Engineering Puzzle
 
+## Solver workbench
+
+This repository includes a geometry-based GDS netlist extractor, a functional
+Sky130 simulator, a symbolic solver, and a tool that reconstructs the puzzle's
+region map. The workflow is CPU-only and reproduces the supplied warm-up before
+solving the full circuit.
+
+```sh
+make setup
+make all
+```
+
+The verified analysis and recovered result are documented in
+[`LOCAL_NOTES.md`](LOCAL_NOTES.md). Generated netlists and downloaded
+dependencies stay local and are excluded from version control.
+
 This repository provides the files for the Jane Street ASIC reverse-engineering puzzle! See the [blog post](https://blog.janestreet.com/can-you-reverse-engineer-an-asic/) for more details.
 
 ### Puzzle GDS
