@@ -126,17 +126,25 @@ class Simulator:
         self.sequential = []
         self.combinational = []
         self.expressions: dict[tuple[str, str], Expression] = {}
+        self.async_expressions: dict[tuple[str, str], Expression] = {}
         for instance in self.instances:
             model = self.models[instance["cell"]]
             if model["sequential"]:
                 self.sequential.append(instance)
                 self.state[instance["name"]] = None
+                metadata = next(iter(model["sequential"].values()))
+                for condition in ("clear", "preset"):
+                    key = (instance["cell"], condition)
+                    if condition in metadata and key not in self.async_expressions:
+                        self.async_expressions[key] = Expression(metadata[condition])
             else:
                 self.combinational.append(instance)
                 for pin, function in model["outputs"].items():
                     if function is None:
                         raise ValueError(f"No output function for {instance['cell']}.{pin}")
-                    self.expressions[(instance["cell"], pin)] = Expression(function)
+                    key = (instance["cell"], pin)
+                    if key not in self.expressions:
+                        self.expressions[key] = Expression(function)
 
         driver: dict[str, str] = {}
         by_name = {instance["name"]: instance for instance in self.combinational}
@@ -205,11 +213,15 @@ class Simulator:
             pin: self.values.get(net) for pin, net in instance["pins"].items()
         }
         if "clear" in metadata:
-            clear = Expression(metadata["clear"]).evaluate(pin_values)
+            clear = self.async_expressions[(instance["cell"], "clear")].evaluate(
+                pin_values
+            )
             if clear is True:
                 return False
         if "preset" in metadata:
-            preset = Expression(metadata["preset"]).evaluate(pin_values)
+            preset = self.async_expressions[(instance["cell"], "preset")].evaluate(
+                pin_values
+            )
             if preset is True:
                 return True
         return self.state[instance["name"]]

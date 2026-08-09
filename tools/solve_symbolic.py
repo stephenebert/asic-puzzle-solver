@@ -34,26 +34,84 @@ def evaluate_expression(expression: Expression, values: dict[str, Any]) -> Any:
 
 
 class SymbolicSimulator:
-    def __init__(self, netlist: dict[str, Any]) -> None:
+    def __init__(self, netlist: dict[str, Any], target_nets: set[str]) -> None:
         self.netlist = netlist
         self.models = netlist["models"]
         self.instances = netlist["instances"]
         self.ports = netlist["ports"]
         self.by_name = {instance["name"]: instance for instance in self.instances}
-        self.sequential = [
+        all_sequential = [
             instance
             for instance in self.instances
             if self.models[instance["cell"]]["sequential"]
         ]
-        self.combinational = [
+        all_combinational = [
             instance
             for instance in self.instances
             if not self.models[instance["cell"]]["sequential"]
         ]
+
+        combinational_driver: dict[str, dict[str, Any]] = {}
+        for instance in all_combinational:
+            model = self.models[instance["cell"]]
+            for pin, net in instance["pins"].items():
+                if model["pins"][pin] == "output":
+                    combinational_driver[net] = instance
+        sequential_driver = {
+            instance["pins"]["Q"]: instance
+            for instance in all_sequential
+            if "Q" in instance["pins"]
+        }
+
+        needed_combinational: set[str] = set()
+        needed_sequential: set[str] = set()
+        pending_nets = list(target_nets)
+        visited_nets: set[str] = set()
+        while pending_nets:
+            net = pending_nets.pop()
+            if net in visited_nets:
+                continue
+            visited_nets.add(net)
+
+            combinational_instance = combinational_driver.get(net)
+            if combinational_instance is not None:
+                needed_combinational.add(combinational_instance["name"])
+                model = self.models[combinational_instance["cell"]]
+                pending_nets.extend(
+                    input_net
+                    for pin, input_net in combinational_instance["pins"].items()
+                    if model["pins"][pin] == "input"
+                )
+                continue
+
+            sequential_instance = sequential_driver.get(net)
+            if sequential_instance is not None:
+                needed_sequential.add(sequential_instance["name"])
+                pending_nets.append(sequential_instance["pins"]["D"])
+
+        self.sequential = [
+            instance
+            for instance in all_sequential
+            if instance["name"] in needed_sequential
+        ]
+        self.combinational = [
+            instance
+            for instance in all_combinational
+            if instance["name"] in needed_combinational
+        ]
+        self.cone_stats = {
+            "combinational": len(self.combinational),
+            "combinational_total": len(all_combinational),
+            "sequential": len(self.sequential),
+            "sequential_total": len(all_sequential),
+            "nets": len(visited_nets),
+        }
         self.expressions: dict[tuple[str, str], Expression] = {}
         for instance in self.combinational:
             for pin, function in self.models[instance["cell"]]["outputs"].items():
-                self.expressions[(instance["cell"], pin)] = Expression(function)
+                key = (instance["cell"], pin)
+                if key not in self.expressions:
+                    self.expressions[key] = Expression(function)
 
         driver: dict[str, str] = {}
         for instance in self.combinational:
@@ -91,9 +149,9 @@ class SymbolicSimulator:
             raise ValueError(f"Combinational loop or missing dependency: {missing}")
         self.order = [self.by_name[name] for name in order]
 
-        driven = set(driver)
+        driven = set(combinational_driver)
         driven.update(
-            instance["pins"]["Q"] for instance in self.sequential
+            instance["pins"]["Q"] for instance in all_sequential
         )
         driven.update(self.ports.values())
         self.floating_nets = {
@@ -186,7 +244,20 @@ def recover_output(netlist: dict[str, Any], bits: list[bool]) -> tuple[bool, byt
 
 
 def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
-    symbolic = SymbolicSimulator(netlist)
+    success_d_net = next(
+        instance["pins"]["D"]
+        for instance in netlist["instances"]
+        if netlist["models"][instance["cell"]]["sequential"]
+        and instance["pins"].get("Q") == netlist["ports"]["success"]
+    )
+    symbolic = SymbolicSimulator(netlist, {success_d_net})
+    stats = symbolic.cone_stats
+    print(
+        "Success cone: "
+        f"{stats['combinational']}/{stats['combinational_total']} combinational, "
+        f"{stats['sequential']}/{stats['sequential_total']} sequential cells",
+        flush=True,
+    )
     state = symbolic.initial_state()
     reset_inputs = {
         "clk": z3.BoolVal(True),
@@ -216,12 +287,6 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
 
     assert values is not None
     final_values = symbolic.evaluate(state, active_inputs)
-    success_d_net = next(
-        instance["pins"]["D"]
-        for instance in symbolic.sequential
-        if instance["pins"].get("Q") == netlist["ports"]["success"]
-    )
-
     solver = z3.Solver()
     solver.add(final_values[success_d_net])
     print("Solving success constraint", flush=True)

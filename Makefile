@@ -1,29 +1,48 @@
 PYTHON := .venv/bin/python
+VENV_STAMP := .venv/.installed
 PDK := vendor/sky130_fd_sc_hd
+WARMUP_NETLIST := build/warmup_netlist.json
+PUZZLE_NETLIST := build/puzzle_netlist.json
+SOLUTION := build/solution.json
+REGIONS := build/regions.json
 
-.PHONY: all setup extract validate solve regions
+.PHONY: all setup extract validate solve regions verify
 
-all: extract validate solve regions
+all: verify
 
-setup: $(PYTHON) $(PDK)
+setup: $(VENV_STAMP) $(PDK)
 
-$(PYTHON): requirements.txt
+$(VENV_STAMP): requirements.txt
 	python3 -m venv .venv
 	$(PYTHON) -m pip install -r requirements.txt
+	touch $@
 
 $(PDK):
 	mkdir -p vendor
 	git clone --depth 1 https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd.git $(PDK)
 
-extract: setup
-	$(PYTHON) tools/extract_netlist.py warmup/04_final.gds build/warmup_netlist.json
-	$(PYTHON) tools/extract_netlist.py puzzle.gds build/puzzle_netlist.json
+$(WARMUP_NETLIST): warmup/04_final.gds tools/extract_netlist.py | setup
+	mkdir -p build
+	$(PYTHON) tools/extract_netlist.py warmup/04_final.gds $@
 
-validate: extract
-	$(PYTHON) tools/simulate_netlist.py build/warmup_netlist.json --validate-warmup
+$(PUZZLE_NETLIST): puzzle.gds tools/extract_netlist.py | setup
+	mkdir -p build
+	$(PYTHON) tools/extract_netlist.py puzzle.gds $@
 
-solve: extract
-	$(PYTHON) tools/solve_symbolic.py build/puzzle_netlist.json
+extract: $(WARMUP_NETLIST) $(PUZZLE_NETLIST)
 
-regions: extract
-	$(PYTHON) tools/recover_regions.py build/puzzle_netlist.json
+validate: $(WARMUP_NETLIST)
+	$(PYTHON) tools/simulate_netlist.py $< --validate-warmup
+
+$(SOLUTION): $(PUZZLE_NETLIST) tools/solve_symbolic.py tools/simulate_netlist.py
+	$(PYTHON) tools/solve_symbolic.py $(PUZZLE_NETLIST) --output $@
+
+solve: $(SOLUTION)
+
+$(REGIONS): $(PUZZLE_NETLIST) tools/recover_regions.py tools/simulate_netlist.py
+	$(PYTHON) tools/recover_regions.py $(PUZZLE_NETLIST) --output $@
+
+regions: $(REGIONS)
+
+verify: validate $(SOLUTION) $(REGIONS) tools/verify_solution.py
+	$(PYTHON) tools/verify_solution.py

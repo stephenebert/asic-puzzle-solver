@@ -16,6 +16,17 @@ The verified analysis and recovered result are documented in
 [`LOCAL_NOTES.md`](LOCAL_NOTES.md). Generated netlists and downloaded
 dependencies stay local and are excluded from version control.
 
+`make all` ends with an exhaustive verification pass. It re-extracts the
+puzzle, replays every rising edge in the supplied VCD, concretely replays the
+winning input, proves the board is unique under the recovered rules, and asks
+Z3 for a counterexample where the circuit and those rules disagree. That final
+query is unsatisfiable across all 2^121 possible boards.
+
+The two expensive analysis stages are optimized for a laptop CPU. Symbolic
+execution is sliced to the cells that can influence `success`, and all 121
+one-hot region experiments run simultaneously as bit lanes inside Python
+integers. No GPU is required.
+
 This repository provides the files for the Jane Street ASIC reverse-engineering puzzle! See the [blog post](https://blog.janestreet.com/can-you-reverse-engineer-an-asic/) for more details.
 
 ### Puzzle GDS

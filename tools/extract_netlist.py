@@ -159,9 +159,9 @@ def extract(gds_path: Path, vendor_root: Path) -> dict[str, Any]:
         if any(marker in cell_name for marker in PHYSICAL_CELL_MARKERS):
             continue
 
-        model = used_models.setdefault(
-            cell_name, sky130_model(cell_name, vendor_root)
-        )
+        if cell_name not in used_models:
+            used_models[cell_name] = sky130_model(cell_name, vendor_root)
+        model = used_models[cell_name]
         pin_roots: dict[str, set[tuple[int, int]]] = defaultdict(set)
         for label in reference.get_labels(layer=67, texttype=PIN_TEXTTYPE):
             if label.text in POWER_PINS:
