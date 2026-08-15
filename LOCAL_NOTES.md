@@ -56,14 +56,34 @@ B  J* J  K* E  E  E  E  E  E  E
 
 ## Reproduce locally
 
-Run these commands from this directory:
+The most direct human-readable route uses no SMT solver:
+
+```sh
+make solve-intuitive
+make verify-intuitive
+```
+
+It reconstructs the region map, exhaustively solves the Star Battle with
+ordinary row-by-row backtracking, and replays the result through the full
+circuit. The solver and its tests run under `python3 -S`, so they cannot import
+Z3 through Python's normal site-package path.
+
+The independent circuit-first route uses Z3:
 
 ```sh
 make setup
-make all
+make solve-z3
+make verify-z3
 ```
 
-`make all` runs the fast core verification. The deeper, optional checks are:
+`make all` remains an alias for `make verify-z3`. To rerun both solvers and
+require byte-identical solution artifacts:
+
+```sh
+make compare-solvers
+```
+
+The deeper, optional checks are:
 
 ```sh
 make protocol architecture easter-eggs
@@ -73,11 +93,12 @@ make media
 
 The KLayout cross-check has a separate pinned dependency in
 `requirements-klayout.txt`. On the development Mac, the locally built KLayout
-wheel linked against Anaconda's existing native libraries, so the two targets
-that use it require:
+wheel linked against Anaconda's existing native libraries, so these targets
+require:
 
 ```sh
 KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-independent
+KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-extended
 KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make media
 ```
 
@@ -97,20 +118,26 @@ not need it. No system symlinks or binary patches are used.
    no dangling loads or multiple drivers, and reproduces `A + B == 496`.
 7. Replay both supplied 121-bit examples against the real recovered netlist;
    both emit `TRY AGAIN` exactly as in `example_inputs.vcd`.
-8. Slice the netlist to the cone that can influence `success`, symbolically
-   unroll 121 clocks, and ask Z3 for the input that makes the `success`
-   flip-flop's D input true. Block that model and solve again to establish
-   uniqueness.
-9. Recover the region map with 121 one-hot boards packed into parallel integer
+8. Recover the region map with 121 one-hot boards packed into parallel integer
    bit lanes. Each board changes one column-counter bank and one region-counter
    bank; grouping the latter identifies the 11 outlined regions.
-10. Repeat the physical extraction with KLayout's independent GDS parser and
+9. Generate all 45 legal two-star patterns for one row and search row by row.
+   Prune touching stars, overfull counters, and columns or regions that cannot
+   still reach two. Continue after the first board and exhaust every remaining
+   branch to prove that the direct Star Battle has exactly one solution.
+10. Replay the backtracking result through the complete 728-cell netlist and
+    recover `(* TWO STARS *)`, without importing or calling Z3.
+11. Independently slice the netlist to the cone that can influence `success`,
+    symbolically unroll 121 clocks, and ask Z3 for the input that makes the
+    `success` flip-flop's D input true. Block that model and solve again to
+    establish uniqueness at the circuit level.
+12. Repeat the physical extraction with KLayout's independent GDS parser and
     Region engine, then compare nets as endpoint partitions rather than by
     arbitrary generated names.
-11. Prove every consecutive enabled burst shorter than 121 bits impossible,
+13. Prove every consecutive enabled burst shorter than 121 bits impossible,
     prove the 121-bit witness unique, and prove that longer suffix bits cannot
     affect `success`.
-12. Classify every flip-flop by role and mechanically decode the VCD and
+14. Classify every flip-flop by role and mechanically decode the VCD and
     physical-layout Easter eggs.
 
 The real extraction contains 728 functional standard-cell instances and 739
@@ -127,21 +154,27 @@ The automated verifier checks several independent boundaries:
    `example_inputs.vcd`, including the complete output byte and `success`.
 3. A concrete replay of the recovered board raises `success` and emits
    `(* TWO STARS *)`.
-4. A separate Star Battle constraint model finds the same board and proves a
-   second board is impossible.
-5. An SMT counterexample query proves that circuit acceptance and the direct
+4. The ordinary backtracking solver exhausts every remaining branch after its
+   first result and proves that the recovered Star Battle has no second board.
+5. The non-Z3 solver's winning board concretely replays through the full
+   circuit, raises `success`, and produces the same JSON result byte-for-byte.
+6. A separate Z3 encoding of the Star Battle rules finds the same board and
+   proves a second board is impossible.
+7. An SMT counterexample query proves that circuit acceptance and the direct
    row, column, region, and no-touch rules agree for all 2^121 input boards.
-6. A second extractor, which shares neither the gdstk parser nor the Shapely
+8. A second extractor, which shares neither the gdstk parser nor the Shapely
    geometry engine, independently recovers the same 728 functional standard-cell
    instances, 66 cell variants, 13 ports, and all 739 canonical net endpoint
    sets.
-7. A separate protocol proof establishes that lengths 0 through 120 are
+9. A separate protocol proof establishes that lengths 0 through 120 are
    unsatisfiable, length 121 has the unique stored witness, and the acceptance
    decision for every longer burst depends only on its first 121 bits.
 
-The last result is exhaustive under the recovered standard-cell model. The
-fresh extraction and supplied-waveform replay validate the boundary between
-that model and the physical layout; this is not a transistor-level proof.
+The backtracking uniqueness result is exhaustive under the recovered region
+map. The circuit/rules equivalence and protocol results are exhaustive under
+the recovered functional standard-cell model. The fresh extraction and
+supplied-waveform replay validate the boundary between that model and the
+physical layout; none of these claims is a transistor-level proof.
 
 ## Recovered sequential architecture
 
@@ -202,13 +235,15 @@ fully known and does not depend on this net.
 
 ## Performance
 
-On the development Mac, success-cone slicing reduced symbolic solve time from
-about 6.0 seconds to 4.0 seconds. Bit-parallel region recovery reduced its wall
-time from about 13 seconds to 0.5 seconds while producing a byte-identical
-region artifact. The full core verification pass takes about 9 seconds and is
-CPU-only. The independent KLayout extraction takes about 1.2 seconds. The
-minimum-length proof takes about 76 seconds, while the universal five-way output
-classification takes about 30 seconds.
+On the development Mac, the exhaustive non-Z3 search visits 8,989 states in
+about 0.2 seconds; search plus concrete circuit replay takes about one second
+after extraction. Success-cone slicing reduced symbolic solve time from about
+6.0 seconds to 4.0 seconds. Bit-parallel region recovery reduced its wall time
+from about 13 seconds to 0.5 seconds while producing a byte-identical region
+artifact. The full core verification pass takes about 9 seconds and is CPU-only.
+The independent KLayout extraction takes about 1.2 seconds. The minimum-length
+proof takes about 76 seconds, while the universal five-way output classification
+takes about 30 seconds.
 
 ## Generated figures and videos
 

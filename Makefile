@@ -1,11 +1,16 @@
 PYTHON := .venv/bin/python
+INTUITIVE_PYTHON := .venv-intuitive/bin/python
 .DELETE_ON_ERROR:
+# Several analysis stages read and rewrite the same generated netlists.
+.NOTPARALLEL:
 
 VENV_STAMP := .venv/.installed
+INTUITIVE_VENV_STAMP := .venv-intuitive/.installed
 PDK := vendor/sky130_fd_sc_hd
 WARMUP_NETLIST := build/warmup_netlist.json
 PUZZLE_NETLIST := build/puzzle_netlist.json
 SOLUTION := build/solution.json
+INTUITIVE_SOLUTION := build/solution_intuitive.json
 REGIONS := build/regions.json
 PROTOCOL_PROOF := build/protocol_proof.json
 ARCHITECTURE := build/architecture.json
@@ -31,15 +36,22 @@ MEDIA_FULL_OUTPUTS := \
 	$(MEDIA_VALIDATION)
 KLAYOUT_ENV ?=
 
-.PHONY: all setup extract validate solve regions verify protocol architecture easter-eggs klayout-results-check independent verify-independent verify-extended media
+.PHONY: all setup setup-intuitive prepare-intuitive extract validate solve solve-z3 solve-intuitive intuitive regions verify verify-z3 verify-intuitive compare-solvers protocol architecture easter-eggs klayout-results-check independent verify-independent verify-extended media
 
 all: verify
 
 setup: $(VENV_STAMP) $(PDK)
 
+setup-intuitive: $(INTUITIVE_VENV_STAMP) $(PDK)
+
 $(VENV_STAMP): requirements.txt
 	python3 -m venv .venv
 	$(PYTHON) -m pip install -r requirements.txt
+	touch $@
+
+$(INTUITIVE_VENV_STAMP): requirements-intuitive.txt
+	python3 -m venv .venv-intuitive
+	$(INTUITIVE_PYTHON) -m pip install -r requirements-intuitive.txt
 	touch $@
 
 $(PDK):
@@ -64,6 +76,21 @@ $(SOLUTION): $(PUZZLE_NETLIST) tools/solve_symbolic.py tools/simulate_netlist.py
 
 solve: $(SOLUTION)
 
+solve-z3: $(PUZZLE_NETLIST) | setup
+	$(PYTHON) tools/solve_symbolic.py $(PUZZLE_NETLIST) --output $(SOLUTION)
+
+prepare-intuitive: setup-intuitive
+	mkdir -p build
+	$(INTUITIVE_PYTHON) tools/extract_netlist.py warmup/04_final.gds $(WARMUP_NETLIST)
+	$(INTUITIVE_PYTHON) tools/extract_netlist.py puzzle.gds $(PUZZLE_NETLIST)
+	$(INTUITIVE_PYTHON) tools/simulate_netlist.py $(WARMUP_NETLIST) --validate-warmup
+	$(INTUITIVE_PYTHON) tools/recover_regions.py $(PUZZLE_NETLIST) --output $(REGIONS)
+
+solve-intuitive: prepare-intuitive tools/solve_intuitive.py
+	python3 -S tools/solve_intuitive.py $(PUZZLE_NETLIST) --regions $(REGIONS) --output $(INTUITIVE_SOLUTION)
+
+intuitive: solve-intuitive
+
 $(REGIONS): $(PUZZLE_NETLIST) tools/recover_regions.py tools/simulate_netlist.py
 	$(PYTHON) tools/recover_regions.py $(PUZZLE_NETLIST) --output $@
 
@@ -71,6 +98,17 @@ regions: $(REGIONS)
 
 verify: validate $(SOLUTION) $(REGIONS) tools/verify_solution.py
 	$(PYTHON) tools/verify_solution.py
+
+verify-z3: verify
+
+verify-intuitive: solve-intuitive tests/test_intuitive_solver.py
+	python3 -S -m unittest discover -s tests -p 'test_intuitive_solver.py' -v
+	@echo "Non-Z3 verification passed"
+
+compare-solvers: solve-intuitive tools/solve_symbolic.py | setup
+	$(PYTHON) tools/solve_symbolic.py $(PUZZLE_NETLIST) --output $(SOLUTION)
+	cmp -s $(INTUITIVE_SOLUTION) $(SOLUTION)
+	@echo "Intuitive and Z3 solution artifacts match byte-for-byte"
 
 $(PROTOCOL_PROOF): $(PUZZLE_NETLIST) $(SOLUTION) $(REGIONS) tools/prove_protocol.py tools/solve_symbolic.py tools/verify_solution.py
 	$(PYTHON) tools/prove_protocol.py $(PUZZLE_NETLIST) --solution $(SOLUTION) --regions $(REGIONS) --output $@
@@ -117,7 +155,9 @@ independent: $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT)
 verify-independent: $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT) $(SOLUTION) $(REGIONS) tools/verify_solution.py
 	$(PYTHON) tools/verify_solution.py $(KLAYOUT_NETLIST) --solution $(SOLUTION) --regions $(REGIONS) --skip-extraction
 
-verify-extended: verify protocol architecture easter-eggs verify-independent
+verify-extended: verify verify-intuitive protocol architecture easter-eggs verify-independent
+	cmp -s $(INTUITIVE_SOLUTION) $(SOLUTION)
+	@echo "All verification stages passed"
 
 $(MEDIA_STAMP): requirements-media.txt | $(VENV_STAMP)
 	$(PYTHON) -m pip install -r requirements-media.txt

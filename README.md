@@ -1,55 +1,216 @@
-# ASIC Reverse-Engineering Puzzle
+# Jane Street ASIC Puzzle Solver
 
-## Solver workbench
+This repository turns Jane Street's `puzzle.gds` layout into a functional
+gate-level model and recovers the final answer:
 
-This repository includes a geometry-based GDS netlist extractor, a functional
-Sky130 simulator, a symbolic solver, and a tool that reconstructs the puzzle's
-region map. The workflow is CPU-only and reproduces the supplied warm-up before
-solving the full circuit.
+```text
+(* TWO STARS *)
+```
+
+There are two complete solving paths:
+
+- an intuitive solver based on Star Battle rules and ordinary backtracking;
+- a symbolic solver that unrolls the circuit with Z3.
+
+Both recover the same unique 121-bit input and replay it through the full
+728-cell circuit. Everything runs on a laptop CPU; no GPU is needed.
+
+## Quick start: intuitive solver, no Z3
+
+You need Python 3.9 or newer, Git, Make, and an internet connection on the
+first run. From a fresh clone:
+
+```sh
+git clone https://github.com/stephenebert/asic-puzzle-solver.git
+cd asic-puzzle-solver
+make solve-intuitive
+```
+
+This command creates a small `.venv-intuitive` environment whose only direct
+requirements are `gdstk` and `Shapely`, downloads the official Sky130 data,
+extracts both layouts, checks the warm-up, recovers the region map, and runs
+the backtracking solver. The search and circuit replay themselves run with
+Python's `-S` flag, so Python does not add installed site packages to the
+search path.
+
+Run the complete non-Z3 regression path with:
+
+```sh
+make verify-intuitive
+```
+
+After the layout has been extracted once, the solving step can also be run
+directly:
+
+```sh
+python3 -S tools/solve_intuitive.py build/puzzle_netlist.json \
+  --regions build/regions.json \
+  --output build/solution_intuitive.json
+```
+
+A successful run prints the unique board, confirms `success: true`, and ends
+with:
+
+```text
+Output:  (* TWO STARS *)
+```
+
+## How the intuitive method works
+
+The recovered circuit is checking an 11×11 two-star Star Battle. A valid board
+must contain exactly two stars in every row, column, and outlined region, and
+no two stars may touch, including diagonally.
+
+The non-Z3 path follows that structure directly:
+
+1. `extract_netlist.py` reconstructs nets from the GDS conductors and vias.
+2. `simulate_netlist.py` provides a small functional simulator for the Sky130
+   cells and validates the extractor against the supplied warm-up.
+3. `recover_regions.py` simulates an all-zero board and 121 one-hot boards in
+   parallel Python integer lanes. Each one-hot board reveals its column counter
+   and region counter, which reconstructs all eleven regions.
+4. `solve_intuitive.py` generates the 45 possible ways to place two
+   non-touching stars in one row, then builds the board one row at a time.
+5. A partial board is discarded only when stars touch, a counter exceeds two,
+   or the unfilled rows no longer have enough capacity to bring a column or
+   region up to two.
+6. The search continues after finding the first board. Exhausting every
+   remaining branch without finding a second board proves that the recovered
+   Star Battle has a unique solution.
+7. The winning 121 bits are clocked through the complete extracted circuit,
+   which raises `success` and emits `(* TWO STARS *)` one byte per clock.
+
+On the development Mac, the exhaustive board search visits 8,989 states and
+takes about 0.2 seconds. The direct solver plus concrete replay takes about one
+second; `make solve-intuitive`, including fresh extraction and region recovery,
+takes about five seconds.
+
+## Z3 method
+
+The circuit-first solver uses Z3 instead of recognizing the puzzle rules.
+Install its environment and run it with:
 
 ```sh
 make setup
-make all
+make solve-z3
 ```
 
-The verified analysis and recovered result are documented in
-[`LOCAL_NOTES.md`](LOCAL_NOTES.md). Generated netlists and downloaded
-dependencies stay local and are excluded from version control.
+For the core symbolic verification suite:
 
-`make all` ends with an exhaustive verification pass. It re-extracts the
-puzzle, replays every rising edge in the supplied VCD, concretely replays the
-winning input, proves the board is unique under the recovered rules, and asks
-Z3 for a counterexample where the circuit and those rules disagree. That final
-query is unsatisfiable across all 2^121 possible boards.
+```sh
+make verify-z3
+```
 
-The two expensive analysis stages are optimized for a laptop CPU. Symbolic
-execution is sliced to the cells that can influence `success`, and all 121
-one-hot region experiments run simultaneously as bit lanes inside Python
-integers. No GPU is required.
+`make all` is kept as a short alias for this Z3-backed verification path.
 
-This repository provides the files for the Jane Street ASIC reverse-engineering puzzle! See the [blog post](https://blog.janestreet.com/can-you-reverse-engineer-an-asic/) for more details.
+The symbolic solver traces backward from `success`, keeps only cells that can
+influence it, represents the 121 serial inputs as Boolean variables, and
+unrolls the sequential circuit for 121 clocks. Z3 finds the accepting input;
+a second query blocks that exact model and establishes that no other 121-bit
+input is accepted. A concrete full-netlist replay then recovers the ASCII
+answer.
 
-### Puzzle GDS
+The core verifier goes further than finding one input. It replays all 312
+rising edges in the supplied VCD and asks Z3 for any board on which circuit
+acceptance differs from the direct Star Battle rules. That counterexample query
+is unsatisfiable, proving agreement for all 2^121 boards under the recovered
+functional standard-cell model.
 
-The puzzle GDS is in this repository, in the file named `puzzle.gds`. You can preview it using [KLayout](https://www.klayout.de/) or the [TinyTapeout Online GDS Viewer](https://gds-viewer.tinytapeout.com/).
+## Compare both solvers
 
-See `example_inputs.vcd` which shows some inputs being fed to the design (unfortunately, not the correct inputs to make `success` go high!). You can view it using [Surfer](https://surfer-project.org/) or a similar tool.
+To rerun both methods and require their JSON outputs to match byte-for-byte:
 
-To help you get started, below is an image with some hints. The region labelled as "output generator" is safe to ignore during your initial reverse-engineering steps, but you'll need to simulate it to get your final answer!
+```sh
+make compare-solvers
+```
 
-![](layout.png)
+The two paths support different claims:
 
-### Warm-up Puzzle
+| Check | Intuitive path | Z3 path |
+| --- | --- | --- |
+| Recovers the same 121-bit board | Yes | Yes |
+| Exhaustively proves the recovered Star Battle is unique | Yes | Yes |
+| Replays the winner through all 728 cells | Yes | Yes |
+| Recovers `(* TWO STARS *)` | Yes | Yes |
+| Proves circuit/rule equivalence for every 121-bit board | No | Yes |
+| Proves the exact accepted protocol lengths | No | Optional deep check |
 
-To familiarize yourself with the flow and help develop your tools, we've put together a small example design and run it through a very similar flow to the one used for the real thing! The example design consists of two shift registers, an adder, and a comparator, outputting success if `A + B == 496`.
+The intuitive proof is deliberately simple and inspectable. The Z3 proof is
+the stronger bridge back to every possible input of the recovered circuit.
 
-You'll find the following files related to the warm-up puzzle:
+## Useful Make targets
 
-- `warmup/00_source.v`: The original Verilog source code of the example design
-- `warmup/01_netlist.v`: Synthesized netlist comprising of a list of standard cells
-  and connections
-- `warmup/02_netlist_with_power_rails.v`: Netlist with VDD and GND rails added
-- `warmup/03_post_place_and_route.def`: Physical layout of cells and routing
-  connections, corresponding to cell and net names.
-- `warmup/04_final.gds`: The final manufacturable layout file, with many internal names
-  removed
+| Command | What it does |
+| --- | --- |
+| `make solve-intuitive` | Re-extract, recover regions, and solve without Z3 |
+| `make verify-intuitive` | Run non-Z3 tests, uniqueness search, and circuit replay |
+| `make solve-z3` | Rerun the success-cone symbolic solver |
+| `make verify-z3` | Run the core VCD, uniqueness, replay, and equivalence checks |
+| `make compare-solvers` | Require both solution artifacts to be identical |
+| `make protocol` | Prove no shorter burst works and characterize longer bursts |
+| `make architecture` | Classify all 92 flip-flops by their circuit role |
+| `make easter-eggs` | Reproduce the VCD, output, and physical-layout Easter eggs |
+| `make verify-independent` | Repeat extraction with KLayout and verify that netlist |
+| `make verify-extended` | Run both methods and all optional proof stages |
+| `make media` | Render the evidence figures and walkthrough videos |
+
+Typical development-Mac timings are roughly 0.2 seconds for the intuitive
+search, 4 seconds for the symbolic solve, 9 seconds for core verification, and
+76 seconds for the full minimum-length protocol proof. Timings vary by machine.
+
+## Generated artifacts
+
+| Path | Contents |
+| --- | --- |
+| `build/puzzle_netlist.json` | Primary GDS extraction |
+| `build/regions.json` | Recovered 11×11 region map |
+| `build/solution_intuitive.json` | Backtracking solution and circuit output |
+| `build/solution.json` | Z3 solution and checked-in reference result |
+| `build/protocol_proof.json` | Accepted-length and suffix theorem |
+| `build/architecture.json` | Sequential architecture classification |
+| `build/easter_eggs.json` | Machine-checked hidden messages and output cases |
+| `build/klayout_crosscheck.json` | Independent extractor comparison |
+| `build/media/` | Figures, videos, captions, and visual QA artifacts |
+
+Generated netlists, downloaded dependencies, and media remain local and are
+excluded from version control. The compact region and reference-solution JSON
+files are checked in so results are easy to compare.
+
+## Optional KLayout cross-check
+
+KLayout is isolated in `requirements-klayout.txt`; neither ordinary solver
+requires it. A normal platform wheel should work with:
+
+```sh
+make verify-independent
+```
+
+The locally built wheel on the development Mac linked against existing
+Anaconda native libraries. Only on that machine, use:
+
+```sh
+KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-independent
+KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-extended
+KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make media
+```
+
+No system symlinks or binary patches are required.
+
+## Challenge files
+
+Jane Street's [challenge post](https://blog.janestreet.com/can-you-reverse-engineer-an-asic/)
+describes the original task. The main supplied files are:
+
+- `puzzle.gds`: the physical ASIC layout;
+- `example_inputs.vcd`: two deliberately unsuccessful input traces;
+- `layout.png`: a high-level map of the chip;
+- `warmup/`: a smaller example with source, netlists, DEF, and GDS files.
+
+The warm-up contains two shift registers, an adder, and a comparator checking
+whether `A + B == 496`. It provides a useful known-answer test before touching
+the unknown puzzle.
+
+![Annotated puzzle layout](layout.png)
+
+For the exact recovered board, proof boundaries, architecture, protocol, and
+Easter eggs, see [`LOCAL_NOTES.md`](LOCAL_NOTES.md).
