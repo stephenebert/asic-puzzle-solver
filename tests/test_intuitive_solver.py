@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Regression tests for the transparent, non-Z3 solving path."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+
+from solve_intuitive import (  # noqa: E402
+    StarBattleSolver,
+    board_to_bits,
+    generate_row_patterns,
+    normalize_regions,
+    replay_candidate,
+    validate_board,
+)
+
+
+EXPECTED_OUTPUT = b"(* TWO STARS *)"
+
+
+class IntuitiveSolverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.regions = normalize_regions(
+            json.loads((ROOT / "build/regions.json").read_text())
+        )
+        cls.result = StarBattleSolver(cls.regions).solve(max_solutions=2)
+
+    def test_row_patterns_are_complete_and_non_touching(self) -> None:
+        patterns = generate_row_patterns(11)
+        self.assertEqual(len(patterns), 45)
+        self.assertEqual(len(set(patterns)), 45)
+        for mask in patterns:
+            self.assertEqual(bin(mask).count("1"), 2)
+            self.assertEqual(mask & (mask << 1), 0)
+
+    def test_search_exhausts_with_one_board(self) -> None:
+        self.assertTrue(self.result.search_exhausted)
+        self.assertEqual(len(self.result.boards), 1)
+        actual_bits = board_to_bits(self.result.boards[0], len(self.regions))
+        self.assertEqual(len(actual_bits), 121)
+
+    def test_early_stop_cannot_be_mistaken_for_uniqueness(self) -> None:
+        ambiguous_regions = tuple(tuple(range(8)) for _ in range(8))
+
+        two_results = StarBattleSolver(ambiguous_regions).solve(max_solutions=2)
+        self.assertEqual(len(two_results.boards), 2)
+        self.assertFalse(two_results.search_exhausted)
+
+        one_result = StarBattleSolver(ambiguous_regions).solve(max_solutions=1)
+        self.assertEqual(len(one_result.boards), 1)
+        self.assertFalse(one_result.search_exhausted)
+
+    def test_board_satisfies_every_direct_rule(self) -> None:
+        validate_board(self.result.boards[0], self.regions)
+
+    def test_full_circuit_replay_accepts_and_emits_answer(self) -> None:
+        netlist = json.loads((ROOT / "build/puzzle_netlist.json").read_text())
+        bits = board_to_bits(self.result.boards[0], len(self.regions))
+        success, output = replay_candidate(netlist, bits)
+        self.assertTrue(success)
+        self.assertEqual(output, EXPECTED_OUTPUT)
+
+    def test_z3_is_not_loaded(self) -> None:
+        self.assertNotIn("z3", sys.modules)
+
+    def test_bad_inputs_fail_clearly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be an object"):
+            normalize_regions([])  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "exactly 121"):
+            replay_candidate({}, "0" * 120)
+        with self.assertRaisesRegex(ValueError, "other than 0 and 1"):
+            replay_candidate({}, "0" * 120 + "x")
+
+
+if __name__ == "__main__":
+    unittest.main()

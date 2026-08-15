@@ -1,5 +1,6 @@
 .DS_Store
 .venv/
+.venv-intuitive/
 vendor/
 __pycache__/
 *.py[cod]
