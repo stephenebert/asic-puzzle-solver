@@ -1,16 +1,13 @@
-# Jane Street ASIC puzzle — local workbench notes
-
-This directory is an analysis workspace. Nothing here submits an answer or
-publishes the solution to a public repository.
+# Jane Street ASIC puzzle notes
 
 ## Result
 
-The ASIC validates an 11×11 **two-star Star Battle** board. It consumes the
-board in row-major order as 121 serial bits. A valid board has exactly two
-stars in every row, column, and outlined region, with no stars touching even
-diagonally.
+The circuit checks an 11 by 11 two star Star Battle board.
 
-The accepted board is unique:
+The rules require exactly two stars in every row, column, and region. No two
+stars may touch horizontally, vertically, or diagonally.
+
+The unique board is
 
 ```text
 .......#.#.
@@ -26,230 +23,121 @@ The accepted board is unique:
 .#.#.......
 ```
 
-The serial input string is:
+The 121 bit serial input is
 
 ```text
 0000000101010000100000000000010101010000000000001010000001000001000000100000101000010000000100000010000010010001010000000
 ```
 
-Concrete replay raises `success` and emits:
+The circuit raises `success` and emits
 
 ```text
 (* TWO STARS *)
 ```
 
-The recovered regions (`A` through `K`) and stars (`*`) are:
+The recovered region map is stored in `build/regions.json`.
 
-```text
-A  A  A  A  A  B  B  C* D  D* E
-A* A  F  A  A  B* C  C  D  D  E
-A  A  F  B  B  B  B  C* C  D* E
-A* A  F* B  G  G  G  E  C  C  E
-F  A  F  B  G* E  E* E  E  E  E
-F  F  F* B  G  G  G  E  H* H  H
-B  B  B  B  B* B  G  E  H  I  I*
-B  J* J  J  G  G  G* E  H  I  I
-B  J  J  K* E  E  E  E  H  I  I*
-B  B  J  K  K  E* E  E  H* H  H
-B  J* J  K* E  E  E  E  E  E  E
-```
+## Run
 
-## Reproduce locally
-
-The most direct human-readable route uses no SMT solver:
+Use ordinary Star Battle backtracking
 
 ```sh
 make solve-star-battle
 make verify-star-battle
 ```
 
-It reconstructs the region map, exhaustively solves the Star Battle with
-ordinary row-by-row backtracking, and replays the result through the full
-circuit. The solver and its tests run under `python3 -S`, so they cannot import
-Z3 through Python's normal site-package path.
-
-The independent circuit-first route uses Z3:
+Use Z3 on the recovered circuit
 
 ```sh
-make setup
 make solve-z3
 make verify-z3
 ```
 
-`make all` remains an alias for `make verify-z3`. To rerun both solvers and
-require byte-identical solution artifacts:
+Compare both results
 
 ```sh
 make compare-solvers
 ```
 
-The deeper, optional checks are:
+Run deeper checks
 
 ```sh
-make protocol architecture easter-eggs
+make protocol
+make architecture
+make easter-eggs
 make verify-independent
-make media
 ```
 
-The KLayout cross-check has a separate pinned dependency in
-`requirements-klayout.txt`. On the development Mac, the locally built KLayout
-wheel linked against Anaconda's existing native libraries, so these targets
-require:
+## Method
 
-```sh
-KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-independent
-KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make verify-extended
-KLAYOUT_ENV='DYLD_LIBRARY_PATH=/opt/anaconda3/lib' make media
-```
+1. Preserve standard cell references from the GDS hierarchy.
+2. Join conductor shapes from `li1` through `met5` with their via cuts.
+3. Map cell pins and top level ports onto the connected shapes.
+4. Read cell behavior from the official Sky130 Liberty data.
+5. Check the extractor against the supplied warmup circuit.
+6. Replay every rising edge in the supplied VCD.
+7. Recover the region map with 121 one hot simulations packed into Python
+   integer lanes.
+8. Solve the recovered Star Battle with exhaustive row by row backtracking.
+9. Solve the circuit again by unrolling 121 clocks with Z3.
+10. Repeat extraction with KLayout and compare every recovered net.
 
-That workaround is specific to this local wheel; a healthy platform wheel does
-not need it. No system symlinks or binary patches are used.
+The extracted design has 728 functional cells, 739 signal nets, and 92 flip
+flops.
 
-## Method summary
+## Explanation
 
-1. Preserve the standard-cell references from the GDS hierarchy.
-2. Union conductor geometry on `li1` through `met5` (GDS layers 67–72).
-3. Join adjacent conductor layers wherever datatype-44 via cuts overlap.
-4. Map transformed standard-cell pin labels and top-level I/O labels onto the
-   resulting connected components.
-5. Read Boolean functions and sequential metadata from the official Sky130
-   Liberty JSON models.
-6. Validate the method against the warm-up: it recovers all 84 DEF nets, has
-   no dangling loads or multiple drivers, and reproduces `A + B == 496`.
-7. Replay both supplied 121-bit examples against the real recovered netlist;
-   both emit `TRY AGAIN` exactly as in `example_inputs.vcd`.
-8. Recover the region map with 121 one-hot boards packed into parallel integer
-   bit lanes. Each board changes one column-counter bank and one region-counter
-   bank; grouping the latter identifies the 11 outlined regions.
-9. Generate all 45 legal two-star patterns for one row and search row by row.
-   Prune touching stars, overfull counters, and columns or regions that cannot
-   still reach two. Continue after the first board and exhaust every remaining
-   branch to prove that the direct Star Battle has exactly one solution.
-10. Replay the backtracking result through the complete 728-cell netlist and
-    recover `(* TWO STARS *)`, without importing or calling Z3.
-11. Independently slice the netlist to the cone that can influence `success`,
-    symbolically unroll 121 clocks, and ask Z3 for the input that makes the
-    `success` flip-flop's D input true. Block that model and solve again to
-    establish uniqueness at the circuit level.
-12. Repeat the physical extraction with KLayout's independent GDS parser and
-    Region engine, then compare nets as endpoint partitions rather than by
-    arbitrary generated names.
-13. Prove every consecutive enabled burst shorter than 121 bits impossible,
-    prove the 121-bit witness unique, and prove that longer suffix bits cannot
-    affect `success`.
-14. Classify every flip-flop by role and mechanically decode the VCD and
-    physical-layout Easter eggs.
+The result is checked in several independent ways.
 
-The real extraction contains 728 functional standard-cell instances and 739
-signal nets. The only dangling load is in the isolated output-generator area;
-all other one-ended nets are intentionally unused buffer or constant outputs.
+- Fresh extraction recovers all 728 functional cells and 739 nets.
+- Warmup simulation reproduces the known `A + B == 496` behavior.
+- Concrete simulation matches all 312 rising edges in the supplied VCD.
+- Backtracking exhausts the rule puzzle and finds exactly one board.
+- Full circuit replay accepts that board and emits `(* TWO STARS *)`.
+- Z3 finds the same input and proves there is no second accepted 121 bit input.
+- A universal Z3 query proves that the circuit and the direct rules agree for
+  all 2^121 boards.
+- KLayout independently recovers the same cells, ports, and net endpoints.
+- A protocol proof shows that no input shorter than 121 bits can succeed.
 
-## Why the answer is correct
+These claims are exhaustive under the recovered functional cell model. They
+are not transistor level or physical timing proofs.
 
-The automated verifier checks several independent boundaries:
+## Circuit structure
 
-1. A fresh extraction from `puzzle.gds` exactly matches the netlist being
-   tested: 728 functional standard-cell instances and 739 nets.
-2. A concrete simulation matches all 312 rising edges in
-   `example_inputs.vcd`, including the complete output byte and `success`.
-3. A concrete replay of the recovered board raises `success` and emits
-   `(* TWO STARS *)`.
-4. The ordinary backtracking solver exhausts every remaining branch after its
-   first result and proves that the recovered Star Battle has no second board.
-5. The non-Z3 solver's winning board concretely replays through the full
-   circuit, raises `success`, and produces the same JSON result byte-for-byte.
-6. A separate Z3 encoding of the Star Battle rules finds the same board and
-   proves a second board is impossible.
-7. An SMT counterexample query proves that circuit acceptance and the direct
-   row, column, region, and no-touch rules agree for all 2^121 input boards.
-8. A second extractor, which shares neither the gdstk parser nor the Shapely
-   geometry engine, independently recovers the same 728 functional standard-cell
-   instances, 66 cell variants, 13 ports, and all 739 canonical net endpoint
-   sets.
-9. A separate protocol proof establishes that lengths 0 through 120 are
-   unsatisfiable, length 121 has the unique stored witness, and the acceptance
-   decision for every longer burst depends only on its first 121 bits.
+The 92 flip flops have the following roles.
 
-The backtracking uniqueness result is exhaustive under the recovered region
-map. The circuit/rules equivalence and protocol results are exhaustive under
-the recovered functional standard-cell model. The fresh extraction and
-supplied-waveform replay validate the boundary between that model and the
-physical layout; none of these claims is a transistor-level proof.
+- 22 track column counts
+- 22 track region counts
+- 9 track the serial position
+- 8 count all stars
+- 3 check each row
+- 13 detect touching stars
+- 15 control the result and ASCII output
 
-## Recovered sequential architecture
+The only undriven net is inside the output generator. It does not affect the
+winning result.
 
-Every one of the 92 flip-flops has a concrete role:
+## Input protocol
 
-- 44 flip-flops implement twenty-two two-bit counters: eleven column counters
-  and eleven recovered-region counters.
-- 9 track the serial position: four column-phase bits, four row-phase bits, and
-  a terminal flag.
-- 8 count the total number of stars.
-- 3 implement the per-row check.
-- 13 implement a twelve-bit sliding history and sticky no-touch violation.
-- 15 implement verdict, success, character index, and output-byte state.
+1. Hold `rst_n` low for three rising clock edges.
+2. Release reset.
+3. Set `enable` high.
+4. Clock the 121 bits into `I` from left to right.
+5. Set `enable` low.
+6. Continue clocking to read one ASCII byte from `O` on each edge.
 
-`tools/analyze_architecture.py` records the exact instance mapping, state
-dependencies, and combinational cone sizes in `build/architecture.json`. The
-604 non-clock combinational cells are also accounted for: 592 belong exclusively
-to one logical group and 12 are shared.
+On the first disabled edge `success` rises and `O` contains `(`. Extra enabled
+bits after the first 121 do not change acceptance. They do advance the output
+generator and can hide the first characters.
 
-## Exact clock-protocol theorem
+## Easter eggs
 
-Under the explicit protocol of three reset edges, an optional idle edge, `N`
-consecutive enabled input edges, and then one disabled decision edge:
-
-- every `N` from 0 through 120 is unsatisfiable;
-- `N = 121` is satisfiable with exactly the stored 121-bit board;
-- the optional idle edge is a no-op on the entire 79-flip-flop success cone;
-- the disabled decision edge is independent of the value held on `I`;
-- for every `N >= 121`, success depends only on the first 121 bits and the
-  remaining suffix bits are don't-cares for acceptance.
-
-If `enable` stays high, success can first rise on enabled edge 122. Extra
-enabled clocks also advance the output generator, so `enable` should fall
-immediately after bit 121 to capture the complete ASCII message from its first
-character.
-
-## Output diagnostics and Easter eggs
-
-The automated Easter-egg verifier reproduces the VCD phrase
-`The night sky awaits` and the 36-bar physical Morse message
-`PER ARENAM AD ASTRA` (naturally read as “through the sand to the stars”). It
-also proves a five-way output classification for both static values of the sole
-undriven net, over all 2^121 boards:
-
-- empty board: `EMPTY SKY`;
-- full board: `BIG BANG`;
-- valid Star Battle: `(* TWO STARS *)`;
-- correct row/column/region counts but touching stars: an X-sensitive
-  `TWO?NOT TOUC?` diagnostic affected by the undriven output-only net;
-- every other board: `TRY AGAIN`.
-
-The ambiguous diagnostic must not be silently normalized. With `n0653 = 0`, it
-is `TWO"NOT TOUCH`; with `n0653 = 1`, it is `TWO NOT TOUCJ` followed by bytes
-`02 10`. Three-valued simulation leaves the affected bits unknown. Physical
-reconstruction confirms that `n0653` reaches only `O[1]` and `O[4]` and touches
-two input pins but no driver, rail, or top-level label. The winning output is
-fully known and does not depend on this net.
-
-## Performance
-
-On the development Mac, the exhaustive non-Z3 search visits 8,989 states in
-about 0.2 seconds; search plus concrete circuit replay takes about one second
-after extraction. Success-cone slicing reduced symbolic solve time from about
-6.0 seconds to 4.0 seconds. Bit-parallel region recovery reduced its wall time
-from about 13 seconds to 0.5 seconds while producing a byte-identical region
-artifact. The full core verification pass takes about 9 seconds and is CPU-only.
-The independent KLayout extraction takes about 1.2 seconds. The minimum-length
-proof takes about 76 seconds, while the universal five-way output classification
-takes about 30 seconds.
-
-## Generated figures and videos
-
-After `make media`, `build/media/` contains four evidence figures, a 16:9
-walkthrough poster, a 78-second captioned explainer, a 20-second answer reveal,
-matching SRT caption files, decoded-frame contact sheets, and a machine-readable
-validation report. The videos are silent H.264 at 1920×1080 and 24 fps. They use
-only the supplied layout and locally reproduced proof artifacts; no stock media
-or external artwork is included.
+- The two supplied inputs hide `The night sky awaits`.
+- Morse bars below the die decode to `PER ARENAM AD ASTRA`.
+- `(* TWO STARS *)` is also valid OCaml comment syntax.
+- An empty board emits `EMPTY SKY`.
+- A full board emits `BIG BANG`.
+- Other ordinary failures emit `TRY AGAIN`.
+- The VCD date points to the leap second at the end of 2016.
+- The warmup target 496 is a perfect number.
