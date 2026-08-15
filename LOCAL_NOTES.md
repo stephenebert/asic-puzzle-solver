@@ -59,8 +59,8 @@ B  J* J  K* E  E  E  E  E  E  E
 The most direct human-readable route uses no SMT solver:
 
 ```sh
-make solve-intuitive
-make verify-intuitive
+make solve-star-battle
+make verify-star-battle
 ```
 
 It reconstructs the region map, exhaustively solves the Star Battle with

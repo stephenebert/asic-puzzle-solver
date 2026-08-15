@@ -9,13 +9,13 @@ gate-level model and recovers the final answer:
 
 There are two complete solving paths:
 
-- an intuitive solver based on Star Battle rules and ordinary backtracking;
+- a rule-based solver that uses ordinary Star Battle backtracking;
 - a symbolic solver that unrolls the circuit with Z3.
 
 Both recover the same unique 121-bit input and replay it through the full
 728-cell circuit. Everything runs on a laptop CPU; no GPU is needed.
 
-## Quick start: intuitive solver, no Z3
+## Quick start: Star Battle solver, no Z3
 
 You need Python 3.9 or newer, Git, Make, and an internet connection on the
 first run. From a fresh clone:
@@ -23,10 +23,10 @@ first run. From a fresh clone:
 ```sh
 git clone https://github.com/stephenebert/asic-puzzle-solver.git
 cd asic-puzzle-solver
-make solve-intuitive
+make solve-star-battle
 ```
 
-This command creates a small `.venv-intuitive` environment whose only direct
+This command creates a small `.venv-star-battle` environment whose only direct
 requirements are `gdstk` and `Shapely`, downloads the official Sky130 data,
 extracts both layouts, checks the warm-up, recovers the region map, and runs
 the backtracking solver. The search and circuit replay themselves run with
@@ -36,16 +36,16 @@ search path.
 Run the complete non-Z3 regression path with:
 
 ```sh
-make verify-intuitive
+make verify-star-battle
 ```
 
 After the layout has been extracted once, the solving step can also be run
 directly:
 
 ```sh
-python3 -S tools/solve_intuitive.py build/puzzle_netlist.json \
+python3 -S tools/solve_star_battle.py build/puzzle_netlist.json \
   --regions build/regions.json \
-  --output build/solution_intuitive.json
+  --output build/solution_star_battle.json
 ```
 
 A successful run prints the unique board, confirms `success: true`, and ends
@@ -55,7 +55,7 @@ with:
 Output:  (* TWO STARS *)
 ```
 
-## How the intuitive method works
+## How the Star Battle method works
 
 The recovered circuit is checking an 11×11 two-star Star Battle. A valid board
 must contain exactly two stars in every row, column, and outlined region, and
@@ -69,7 +69,7 @@ The non-Z3 path follows that structure directly:
 3. `recover_regions.py` simulates an all-zero board and 121 one-hot boards in
    parallel Python integer lanes. Each one-hot board reveals its column counter
    and region counter, which reconstructs all eleven regions.
-4. `solve_intuitive.py` generates the 45 possible ways to place two
+4. `solve_star_battle.py` generates the 45 possible ways to place two
    non-touching stars in one row, then builds the board one row at a time.
 5. A partial board is discarded only when stars touch, a counter exceeds two,
    or the unfilled rows no longer have enough capacity to bring a column or
@@ -82,7 +82,7 @@ The non-Z3 path follows that structure directly:
 
 On the development Mac, the exhaustive board search visits 8,989 states and
 takes about 0.2 seconds. The direct solver plus concrete replay takes about one
-second; `make solve-intuitive`, including fresh extraction and region recovery,
+second; `make solve-star-battle`, including fresh extraction and region recovery,
 takes about five seconds.
 
 ## Z3 method
@@ -126,7 +126,7 @@ make compare-solvers
 
 The two paths support different claims:
 
-| Check | Intuitive path | Z3 path |
+| Check | Star Battle path | Z3 path |
 | --- | --- | --- |
 | Recovers the same 121-bit board | Yes | Yes |
 | Exhaustively proves the recovered Star Battle is unique | Yes | Yes |
@@ -135,15 +135,15 @@ The two paths support different claims:
 | Proves circuit/rule equivalence for every 121-bit board | No | Yes |
 | Proves the exact accepted protocol lengths | No | Optional deep check |
 
-The intuitive proof is deliberately simple and inspectable. The Z3 proof is
+The backtracking proof is deliberately simple and inspectable. The Z3 proof is
 the stronger bridge back to every possible input of the recovered circuit.
 
 ## Useful Make targets
 
 | Command | What it does |
 | --- | --- |
-| `make solve-intuitive` | Re-extract, recover regions, and solve without Z3 |
-| `make verify-intuitive` | Run non-Z3 tests, uniqueness search, and circuit replay |
+| `make solve-star-battle` | Re-extract, recover regions, and solve without Z3 |
+| `make verify-star-battle` | Run non-Z3 tests, uniqueness search, and circuit replay |
 | `make solve-z3` | Rerun the success-cone symbolic solver |
 | `make verify-z3` | Run the core VCD, uniqueness, replay, and equivalence checks |
 | `make compare-solvers` | Require both solution artifacts to be identical |
@@ -154,7 +154,7 @@ the stronger bridge back to every possible input of the recovered circuit.
 | `make verify-extended` | Run both methods and all optional proof stages |
 | `make media` | Render the evidence figures and walkthrough videos |
 
-Typical development-Mac timings are roughly 0.2 seconds for the intuitive
+Typical development-Mac timings are roughly 0.2 seconds for the backtracking
 search, 4 seconds for the symbolic solve, 9 seconds for core verification, and
 76 seconds for the full minimum-length protocol proof. Timings vary by machine.
 
@@ -164,7 +164,7 @@ search, 4 seconds for the symbolic solve, 9 seconds for core verification, and
 | --- | --- |
 | `build/puzzle_netlist.json` | Primary GDS extraction |
 | `build/regions.json` | Recovered 11×11 region map |
-| `build/solution_intuitive.json` | Backtracking solution and circuit output |
+| `build/solution_star_battle.json` | Backtracking solution and circuit output |
 | `build/solution.json` | Z3 solution and checked-in reference result |
 | `build/protocol_proof.json` | Accepted-length and suffix theorem |
 | `build/architecture.json` | Sequential architecture classification |

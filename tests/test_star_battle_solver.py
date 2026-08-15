@@ -12,7 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-from solve_intuitive import (  # noqa: E402
+from solve_star_battle import (  # noqa: E402
     StarBattleSolver,
     board_to_bits,
     generate_row_patterns,
@@ -25,7 +25,7 @@ from solve_intuitive import (  # noqa: E402
 EXPECTED_OUTPUT = b"(* TWO STARS *)"
 
 
-class IntuitiveSolverTests(unittest.TestCase):
+class StarBattleSolverTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.regions = normalize_regions(

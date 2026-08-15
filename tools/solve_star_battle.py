@@ -390,7 +390,7 @@ def solve_and_replay(
     bit_string = board_to_bits(board, len(regions))
     success, output = replay_candidate(netlist, bit_string)
     if not success:
-        raise AssertionError("the intuitive solution did not raise circuit success")
+        raise AssertionError("the Star Battle solution did not raise circuit success")
 
     unique = len(result.boards) == 1 and result.search_exhausted
     alternate_bits = (
@@ -414,7 +414,7 @@ def print_summary(
     payload: dict[str, Any], result: SearchResult, elapsed: float, row_patterns: int
 ) -> None:
     stats = result.statistics
-    print("Intuitive Star Battle search")
+    print("Star Battle backtracking search")
     print(f"  legal two-star row patterns: {row_patterns}")
     print(f"  search states visited:       {stats.states_visited}")
     print(f"  candidate branches checked: {stats.branches_considered}")
@@ -443,8 +443,8 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("build/solution_intuitive.json"),
-        help="solution JSON to write (default: build/solution_intuitive.json)",
+        default=Path("build/solution_star_battle.json"),
+        help="solution JSON to write (default: build/solution_star_battle.json)",
     )
     parser.add_argument(
         "--max-solutions",
