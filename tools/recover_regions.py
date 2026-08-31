@@ -8,10 +8,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from simulate_netlist import Expression, Simulator
+from simulate_netlist import Expression, MAX_ASYNC_SETTLE_PASSES, Simulator
 
 
-BOARD_CELLS = 121
+BOARD_SIZE = 11
+BOARD_CELLS = BOARD_SIZE * BOARD_SIZE
+COUNTER_BANK_X_MIN_UM = 100.0
+COUNTER_BANK_X_MAX_UM = 150.0
+EXPECTED_COUNTER_BITS = 4 * BOARD_SIZE
 
 
 def evaluate_mask(expression: Expression, values: dict[str, int], all_mask: int) -> int:
@@ -36,7 +40,7 @@ def evaluate_mask(expression: Expression, values: dict[str, int], all_mask: int)
 
 
 class BitParallelSimulator:
-    """Run the baseline and every one-hot board in one packed simulation."""
+    """Run the baseline and every single-position board in one packed simulation."""
 
     def __init__(self, netlist: dict, lane_count: int):
         scalar = Simulator(netlist)
@@ -78,17 +82,19 @@ class BitParallelSimulator:
     def settle_async(
         self, state: dict[str, int], inputs: dict[str, int]
     ) -> tuple[dict[str, int], dict[str, int]]:
-        for _ in range(4):
+        for _ in range(MAX_ASYNC_SETTLE_PASSES):
             values = self.evaluate(state, inputs)
             next_state = dict(state)
             for instance in self.sequential:
-                metadata = next(iter(self.models[instance["cell"]]["sequential"].values()))
+                sequential_spec = next(
+                    iter(self.models[instance["cell"]]["sequential"].values())
+                )
                 pin_values = {
                     pin: values.get(net, 0) for pin, net in instance["pins"].items()
                 }
                 value = state[instance["name"]]
                 remaining = self.all_mask
-                if "clear" in metadata:
+                if "clear" in sequential_spec:
                     clear = evaluate_mask(
                         self.async_expressions[(instance["cell"], "clear")],
                         pin_values,
@@ -96,7 +102,7 @@ class BitParallelSimulator:
                     )
                     value &= ~clear
                     remaining &= ~clear
-                if "preset" in metadata:
+                if "preset" in sequential_spec:
                     preset = evaluate_mask(
                         self.async_expressions[(instance["cell"], "preset")],
                         pin_values,
@@ -155,12 +161,20 @@ def packed_final_state(netlist: dict) -> dict[str, int]:
 
 
 def recover_regions(netlist: dict) -> dict[str, Any]:
+    # The 44 column and region counter bits form a distinct physical bank in
+    # the supplied layout. Keep the layout-specific window explicit and assert
+    # its expected size so a translated or changed layout fails clearly.
     counter_names = {
         instance["name"]
         for instance in netlist["instances"]
         if netlist["models"][instance["cell"]]["sequential"]
-        and 100 < instance["x"] < 150
+        and COUNTER_BANK_X_MIN_UM < instance["x"] < COUNTER_BANK_X_MAX_UM
     }
+    if len(counter_names) != EXPECTED_COUNTER_BITS:
+        raise AssertionError(
+            f"Expected {EXPECTED_COUNTER_BITS} counter bits in the physical bank, "
+            f"found {len(counter_names)}"
+        )
     state = packed_final_state(netlist)
     baseline = {name: state[name] & 1 for name in counter_names}
 
@@ -176,25 +190,36 @@ def recover_regions(netlist: dict) -> dict[str, Any]:
         )
 
     if any(len(difference) != 2 for difference in signatures):
-        raise AssertionError("Each one-hot input should change two counter banks")
+        raise AssertionError(
+            "Each single-position board should change two counter-bank markers"
+        )
 
-    column_markers = [
-        next(
-            iter(
-                set.intersection(
-                    *(set(signatures[row * 11 + column]) for row in range(11))
-                )
+    column_markers = []
+    for column in range(BOARD_SIZE):
+        common = set.intersection(
+            *(
+                set(signatures[row * BOARD_SIZE + column])
+                for row in range(BOARD_SIZE)
             )
         )
-        for column in range(11)
-    ]
+        if len(common) != 1:
+            raise AssertionError(
+                f"Column {column} has ambiguous counter markers {sorted(common)}"
+            )
+        column_markers.append(next(iter(common)))
+
+    if len(set(column_markers)) != BOARD_SIZE:
+        raise AssertionError("Column counter markers are not distinct")
+
     column_marker_set = set(column_markers)
     region_labels: dict[str, int] = {}
     regions = []
-    for row in range(11):
+    for row in range(BOARD_SIZE):
         region_row = []
-        for column in range(11):
-            marker_set = set(signatures[row * 11 + column]) - column_marker_set
+        for column in range(BOARD_SIZE):
+            marker_set = (
+                set(signatures[row * BOARD_SIZE + column]) - column_marker_set
+            )
             if len(marker_set) != 1:
                 raise AssertionError(
                     f"Cell ({row}, {column}) has ambiguous region marker {marker_set}"
@@ -203,6 +228,11 @@ def recover_regions(netlist: dict) -> dict[str, Any]:
             region_labels.setdefault(marker, len(region_labels))
             region_row.append(region_labels[marker])
         regions.append(region_row)
+
+    if len(region_labels) != BOARD_SIZE:
+        raise AssertionError(
+            f"Expected {BOARD_SIZE} region markers, found {len(region_labels)}"
+        )
 
     return {
         "column_counter_markers": column_markers,

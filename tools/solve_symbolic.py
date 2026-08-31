@@ -14,6 +14,10 @@ import z3
 from simulate_netlist import Expression, Simulator
 
 
+BOARD_SIZE = 11
+BOARD_CELLS = BOARD_SIZE * BOARD_SIZE
+
+
 def evaluate_expression(expression: Expression, values: dict[str, Any]) -> Any:
     def visit(node: Any) -> Any:
         if isinstance(node, bool):
@@ -28,7 +32,7 @@ def evaluate_expression(expression: Expression, values: dict[str, Any]) -> Any:
             return z3.Or(visit(node[1]), visit(node[2]))
         if node[0] == "^":
             return z3.Xor(visit(node[1]), visit(node[2]))
-        raise ValueError(f"Unknown expression node: {node}")
+        raise ValueError(f"unknown expression node: {node}")
 
     return visit(expression.tree)
 
@@ -146,7 +150,7 @@ class SymbolicSimulator:
                     ready.append(consumer)
         if set(order) != combinational_names:
             missing = sorted(combinational_names - set(order))
-            raise ValueError(f"Combinational loop or missing dependency: {missing}")
+            raise ValueError(f"combinational loop or missing dependency: {missing}")
         self.order = [self.by_name[name] for name in order]
 
         driven = set(combinational_driver)
@@ -226,24 +230,26 @@ def recover_output(netlist: dict[str, Any], bits: list[bool]) -> tuple[bool, byt
 
     output = bytearray()
     success = False
-    zero_run = 0
     for _ in range(256):
         simulator.tick()
         success = success or simulator.output("success") is True
         byte = simulator.output_byte()
         if byte is None:
-            raise ValueError("Output contains unknown bits")
+            raise ValueError("output contains unknown bits")
         if byte == 0:
-            zero_run += 1
-            if zero_run >= 2 and output:
+            if output:
                 break
         else:
-            zero_run = 0
             output.append(byte)
+    else:
+        raise RuntimeError("output generator did not terminate with a zero byte")
     return success, bytes(output)
 
 
 def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
+    if bit_count < 1:
+        raise ValueError("bit_count must be positive")
+
     success_d_net = next(
         instance["pins"]["D"]
         for instance in netlist["instances"]
@@ -274,7 +280,7 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
 
     input_bits = [z3.Bool(f"input_{index:03d}") for index in range(bit_count)]
     values = None
-    for index, bit in enumerate(input_bits):
+    for bit in input_bits:
         active_inputs = {
             "clk": z3.BoolVal(True),
             "rst_n": z3.BoolVal(True),
@@ -282,8 +288,6 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
             "I": bit,
         }
         state, values = symbolic.tick(state, active_inputs)
-        if (index + 1) % 11 == 0:
-            print(f"Symbolically executed {index + 1}/{bit_count} input clocks", flush=True)
 
     assert values is not None
     final_values = symbolic.evaluate(state, active_inputs)
@@ -292,7 +296,7 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
     print("Solving success constraint", flush=True)
     status = solver.check()
     if status != z3.sat:
-        raise RuntimeError(f"Solver returned {status}")
+        raise RuntimeError(f"solver returned {status}")
     model = solver.model()
     concrete_bits = [z3.is_true(model.eval(bit, model_completion=True)) for bit in input_bits]
     solver.add(
@@ -313,13 +317,20 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
         ]
     success, output = recover_output(netlist, concrete_bits)
     if not success:
-        raise AssertionError("Symbolic solution did not raise success in concrete replay")
+        raise AssertionError("symbolic solution did not raise success in concrete replay")
     return {
         "bits": "".join("1" if bit else "0" for bit in concrete_bits),
-        "rows": [
-            "".join("#" if bit else "." for bit in concrete_bits[offset : offset + 11])
-            for offset in range(0, bit_count, 11)
-        ],
+        "rows": (
+            [
+                "".join(
+                    "#" if bit else "."
+                    for bit in concrete_bits[offset : offset + BOARD_SIZE]
+                )
+                for offset in range(0, BOARD_CELLS, BOARD_SIZE)
+            ]
+            if bit_count == BOARD_CELLS
+            else []
+        ),
         "success": success,
         "unique": alternate_status == z3.unsat,
         "alternate_bits": (
@@ -333,10 +344,15 @@ def solve(netlist: dict[str, Any], bit_count: int) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("netlist", type=Path)
-    parser.add_argument("--bits", type=int, default=121)
-    parser.add_argument("--output", type=Path, default=Path("build/solution.json"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("netlist", type=Path, help="recovered netlist JSON")
+    parser.add_argument("--bits", type=int, default=121, help="serial input length")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("build/solution.json"),
+        help="solution JSON path",
+    )
     args = parser.parse_args()
     netlist = json.loads(args.netlist.read_text())
     result = solve(netlist, args.bits)

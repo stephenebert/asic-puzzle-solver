@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Map every puzzle flip-flop and functional combinational cell by role.
 
-The semantic role map is curated from the reverse-engineering analysis, then
-checked against the exact flip-flop set, recovered counter markers, one-cycle
-dependency cones, and complete combinational-cell coverage.  The output is
-intentionally media-friendly: coordinates and compact state/gate budgets can
-be plotted without reopening the half-megabyte netlist.
+The semantic role map is checked against the exact flip-flop set, recovered
+counter markers, one-cycle dependency cones, and complete combinational-cell
+coverage.  The output includes coordinates and compact state and gate counts
+so it can be inspected without reopening the full netlist.
 """
 
 from __future__ import annotations

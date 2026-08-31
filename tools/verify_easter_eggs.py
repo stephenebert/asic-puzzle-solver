@@ -32,7 +32,11 @@ from solve_symbolic import SymbolicSimulator
 
 
 ROOT = Path(__file__).resolve().parent.parent
-WITNESS = "0000001001000001010000000000010100010000100011000000000000011000000000000010110000000001000101000000010000010001010000000"
+BOARD_SIZE = 11
+TOUCHING_BOARD_WITNESS = (
+    "000000100100000101000000000001010001000010001100000000000001100000"
+    "0000000010110000000001000101000000010000010001010000000"
+)
 EXPECTED_VCD = "The night sky awaits  "
 EXPECTED_MORSE = "PER ARENAM AD ASTRA"
 MORSE = {
@@ -410,25 +414,71 @@ def prove_output_partition(
     }
 
 
-def output_report(netlist: dict[str, Any], regions: dict[str, Any], solution: dict[str, Any], physical: dict[str, Any]) -> dict[str, Any]:
-    board = [[WITNESS[row * 11 + column] == "1" for column in range(11)] for row in range(11)]
-    region_map = regions["regions"]
+def board_rule_profile(
+    bit_string: str,
+    region_map: list[list[int]],
+) -> tuple[list[list[bool]], list[int], list[int], list[int], list[list[list[int]]]]:
+    board = [
+        [
+            bit_string[row * BOARD_SIZE + column] == "1"
+            for column in range(BOARD_SIZE)
+        ]
+        for row in range(BOARD_SIZE)
+    ]
     row_counts = [sum(row) for row in board]
-    column_counts = [sum(board[row][column] for row in range(11)) for column in range(11)]
-    region_counts = [sum(board[row][column] for row in range(11) for column in range(11) if region_map[row][column] == region) for region in range(11)]
-    touches = []
-    for row in range(11):
-        for column in range(11):
+    column_counts = [
+        sum(board[row][column] for row in range(BOARD_SIZE))
+        for column in range(BOARD_SIZE)
+    ]
+    region_counts = [
+        sum(
+            board[row][column]
+            for row in range(BOARD_SIZE)
+            for column in range(BOARD_SIZE)
+            if region_map[row][column] == region
+        )
+        for region in range(BOARD_SIZE)
+    ]
+    touches: list[list[list[int]]] = []
+    for row in range(BOARD_SIZE):
+        for column in range(BOARD_SIZE):
             if not board[row][column]:
                 continue
-            for other_row in range(max(0, row - 1), min(11, row + 2)):
-                for other_column in range(max(0, column - 1), min(11, column + 2)):
-                    if (other_row, other_column) > (row, column) and board[other_row][other_column]:
+            for other_row in range(max(0, row - 1), min(BOARD_SIZE, row + 2)):
+                for other_column in range(
+                    max(0, column - 1), min(BOARD_SIZE, column + 2)
+                ):
+                    if (
+                        (other_row, other_column) > (row, column)
+                        and board[other_row][other_column]
+                    ):
                         touches.append([[row, column], [other_row, other_column]])
-    if row_counts != [2] * 11 or column_counts != [2] * 11 or region_counts != [2] * 11 or not touches:
+
+    return board, row_counts, column_counts, region_counts, touches
+
+
+def output_report(
+    netlist: dict[str, Any],
+    regions: dict[str, Any],
+    solution: dict[str, Any],
+    physical: dict[str, Any],
+) -> dict[str, Any]:
+    region_map = regions["regions"]
+    board, row_counts, column_counts, region_counts, touches = board_rule_profile(
+        TOUCHING_BOARD_WITNESS,
+        region_map,
+    )
+    if (
+        row_counts != [2] * BOARD_SIZE
+        or column_counts != [2] * BOARD_SIZE
+        or region_counts != [2] * BOARD_SIZE
+        or not touches
+    ):
         raise AssertionError("Fifth-branch witness no longer has the expected rule profile")
 
-    low, high, unknown = replay(netlist, WITNESS, False), replay(netlist, WITNESS, True), replay(netlist, WITNESS, None)
+    low = replay(netlist, TOUCHING_BOARD_WITNESS, False)
+    high = replay(netlist, TOUCHING_BOARD_WITNESS, True)
+    unknown = replay(netlist, TOUCHING_BOARD_WITNESS, None)
     low_hex, high_hex = hex_bytes(low), hex_bytes(high)
     expected_low = b'TWO"NOT TOUCH\0\0\0\0'.hex()
     expected_high = b"TWO NOT TOUCJ\x02\x10\0\0".hex()
@@ -478,7 +528,7 @@ def output_report(netlist: dict[str, Any], regions: dict[str, Any], solution: di
             "reachable_outputs": sorted(reached), "physical_audit": physical,
         },
         "fifth_branch_witness": {
-            "bits": WITNESS,
+            "bits": TOUCHING_BOARD_WITNESS,
             "rows": ["".join("#" if value else "." for value in row) for row in board],
             "row_counts": row_counts, "column_counts": column_counts,
             "region_counts": region_counts, "touching_pairs": touches,

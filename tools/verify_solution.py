@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Independently verify the recovered puzzle solution and proof artifacts."""
-
 from __future__ import annotations
 
 import argparse

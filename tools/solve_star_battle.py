@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Solve the recovered Star Battle with transparent exhaustive backtracking.
+"""Solve the recovered Star Battle by exhaustive backtracking.
 
-This solver deliberately uses no SAT/SMT package.  It starts from the region
-map recovered by ``recover_regions.py``, tries every legal two-star row pattern,
-and prunes only choices that cannot possibly lead to a valid board.  After the
-search proves the board unique, the candidate is replayed through the complete
-gate-level circuit to recover the ASCII answer.
+The search uses the region map from ``recover_regions.py`` and does not import
+a SAT or SMT package.  It tries legal two-star row patterns, prunes impossible
+partial boards, and replays the unique result through the full circuit.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ class RowChoice:
 
 @dataclass
 class SearchStatistics:
-    """Small counters that make the exhaustive search easy to audit."""
+    """Counters reported after the search."""
 
     states_visited: int = 0
     branches_considered: int = 0
@@ -47,7 +45,7 @@ class SearchStatistics:
 
 @dataclass
 class SearchResult:
-    """Boards found before the requested limit, plus proof metadata."""
+    """Search results that distinguish exhaustion from early stopping."""
 
     boards: list[tuple[int, ...]]
     search_exhausted: bool
@@ -137,7 +135,7 @@ class StarBattleSolver:
         return tuple(choices_by_row)
 
     def _build_region_suffix_capacity(self) -> tuple[tuple[int, ...], ...]:
-        """Count region cells at or below each row for sound capacity pruning."""
+        """Count the remaining cells in each region below every row."""
 
         suffix = [[0] * self.size for _ in range(self.size + 1)]
         for row_index in reversed(range(self.size)):
@@ -147,7 +145,7 @@ class StarBattleSolver:
         return tuple(tuple(counts) for counts in suffix)
 
     def solve(self, max_solutions: int = 2) -> SearchResult:
-        """Search completely unless enough boards are found to disprove uniqueness."""
+        """Search until exhaustion or until max_solutions boards are found."""
 
         if max_solutions < 1:
             raise ValueError("max_solutions must be positive")
@@ -418,6 +416,10 @@ def print_summary(
     print(f"  legal two-star row patterns: {row_patterns}")
     print(f"  search states visited:       {stats.states_visited}")
     print(f"  candidate branches checked: {stats.branches_considered}")
+    print(f"  touching branches pruned:   {stats.pruned_touching}")
+    print(f"  overflow branches pruned:   {stats.pruned_overflow}")
+    print(f"  capacity branches pruned:   {stats.pruned_capacity}")
+    print(f"  dead-state cache hits:      {stats.cache_hits}")
     print(f"  dead states cached:         {result.dead_states_cached}")
     print(f"  solutions found:           {len(result.boards)}")
     print(f"  search exhausted:          {str(result.search_exhausted).lower()}")

@@ -7,6 +7,8 @@ STAR_BATTLE_PYTHON := .venv-star-battle/bin/python
 VENV_STAMP := .venv/.installed
 STAR_BATTLE_VENV_STAMP := .venv-star-battle/.installed
 PDK := vendor/sky130_fd_sc_hd
+PDK_REPOSITORY := https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd.git
+PDK_COMMIT := ac7fb61f06e6470b94e8afdf7c25268f62fbd7b1
 WARMUP_NETLIST := build/warmup_netlist.json
 PUZZLE_NETLIST := build/puzzle_netlist.json
 SOLUTION := build/solution.json
@@ -15,34 +17,21 @@ REGIONS := build/regions.json
 PROTOCOL_PROOF := build/protocol_proof.json
 ARCHITECTURE := build/architecture.json
 EASTER_EGGS := build/easter_eggs.json
+LOGO_REPORT := build/logo_report.json
+LOGO_IMAGE := build/jane_street_logo.svg
 KLAYOUT_NETLIST := build/puzzle_netlist_klayout.json
 KLAYOUT_REPORT := build/klayout_crosscheck.json
 KLAYOUT_STAMP := .venv/.klayout-installed
 KLAYOUT_RESULT_STAMP := build/.klayout-crosscheck-ok
-MEDIA_STAMP := .venv/.media-installed
-MEDIA_VALIDATION := build/media/validation.json
-MEDIA_FULL_OUTPUTS := \
-	build/media/extractor_convergence.png \
-	build/media/protocol_timeline.png \
-	build/media/architecture_dataflow.png \
-	build/media/physical_morse.png \
-	build/media/walkthrough_poster.png \
-	build/media/asic_puzzle_explainer.mp4 \
-	build/media/asic_puzzle_explainer.srt \
-	build/media/answer_reveal.mp4 \
-	build/media/answer_reveal.srt \
-	build/media/qa/explainer_contact_sheet.png \
-	build/media/qa/answer_reveal_contact_sheet.png \
-	$(MEDIA_VALIDATION)
 KLAYOUT_ENV ?=
 
-.PHONY: all setup setup-star-battle prepare-star-battle extract validate solve solve-z3 solve-star-battle regions verify verify-z3 verify-star-battle compare-solvers protocol architecture easter-eggs klayout-results-check independent verify-independent verify-extended media
+.PHONY: all setup setup-star-battle pdk prepare-star-battle extract validate solve solve-z3 solve-star-battle regions test verify verify-z3 verify-star-battle compare-solvers protocol architecture easter-eggs logo klayout-results-check independent verify-independent verify-extended verify-all
 
 all: verify
 
-setup: $(VENV_STAMP) $(PDK)
+setup: $(VENV_STAMP) pdk
 
-setup-star-battle: $(STAR_BATTLE_VENV_STAMP) $(PDK)
+setup-star-battle: $(STAR_BATTLE_VENV_STAMP) pdk
 
 $(VENV_STAMP): requirements.txt
 	python3 -m venv .venv
@@ -54,9 +43,25 @@ $(STAR_BATTLE_VENV_STAMP): requirements-star-battle.txt
 	$(STAR_BATTLE_PYTHON) -m pip install -r requirements-star-battle.txt
 	touch $@
 
-$(PDK):
-	mkdir -p vendor
-	git clone --depth 1 https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd.git $(PDK)
+pdk:
+	@mkdir -p vendor
+	@if [ ! -e "$(PDK)" ]; then \
+		git clone --filter=blob:none "$(PDK_REPOSITORY)" "$(PDK)"; \
+	elif [ ! -d "$(PDK)/.git" ]; then \
+		echo "$(PDK) exists but is not a Git repository" >&2; \
+		exit 1; \
+	fi
+	@if ! git -C "$(PDK)" diff --quiet || ! git -C "$(PDK)" diff --cached --quiet; then \
+		echo "$(PDK) has local changes. Preserve them before running setup." >&2; \
+		exit 1; \
+	fi
+	@if ! git -C "$(PDK)" cat-file -e "$(PDK_COMMIT)^{commit}" 2>/dev/null; then \
+		git -C "$(PDK)" fetch --depth 1 origin "$(PDK_COMMIT)"; \
+	fi
+	@if [ "$$(git -C "$(PDK)" rev-parse HEAD 2>/dev/null)" != "$(PDK_COMMIT)" ]; then \
+		git -C "$(PDK)" checkout --detach "$(PDK_COMMIT)"; \
+	fi
+	@test "$$(git -C "$(PDK)" rev-parse HEAD)" = "$(PDK_COMMIT)"
 
 $(WARMUP_NETLIST): warmup/04_final.gds tools/extract_netlist.py | setup
 	mkdir -p build
@@ -94,6 +99,9 @@ $(REGIONS): $(PUZZLE_NETLIST) tools/recover_regions.py tools/simulate_netlist.py
 
 regions: $(REGIONS)
 
+test: $(PUZZLE_NETLIST) $(REGIONS) tests/test_star_battle_solver.py
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+
 verify: validate $(SOLUTION) $(REGIONS) tools/verify_solution.py
 	$(PYTHON) tools/verify_solution.py
 
@@ -123,11 +131,14 @@ $(EASTER_EGGS): $(PUZZLE_NETLIST) $(SOLUTION) $(REGIONS) example_inputs.vcd puzz
 
 easter-eggs: $(EASTER_EGGS)
 
+logo: puzzle.gds warmup/04_final.gds tools/verify_logo.py | setup
+	$(PYTHON) tools/verify_logo.py --output $(LOGO_REPORT) --svg $(LOGO_IMAGE)
+
 $(KLAYOUT_STAMP): requirements-klayout.txt | $(VENV_STAMP)
 	$(PYTHON) -m pip install -r requirements-klayout.txt
 	touch $@
 
-$(KLAYOUT_RESULT_STAMP): puzzle.gds $(PUZZLE_NETLIST) tools/extract_netlist_klayout.py | $(KLAYOUT_STAMP)
+$(KLAYOUT_RESULT_STAMP): puzzle.gds $(PUZZLE_NETLIST) tools/extract_netlist_klayout.py $(KLAYOUT_STAMP)
 	@set -e; \
 	trap 'rm -f $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT) $(KLAYOUT_RESULT_STAMP)' EXIT; \
 	rm -f $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT) $(KLAYOUT_RESULT_STAMP); \
@@ -153,16 +164,9 @@ independent: $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT)
 verify-independent: $(KLAYOUT_NETLIST) $(KLAYOUT_REPORT) $(SOLUTION) $(REGIONS) tools/verify_solution.py
 	$(PYTHON) tools/verify_solution.py $(KLAYOUT_NETLIST) --solution $(SOLUTION) --regions $(REGIONS) --skip-extraction
 
-verify-extended: verify verify-star-battle protocol architecture easter-eggs verify-independent
+verify-extended: verify verify-star-battle protocol architecture easter-eggs logo
 	cmp -s $(STAR_BATTLE_SOLUTION) $(SOLUTION)
-	@echo "All verification stages passed"
+	@echo "Extended verification stages passed"
 
-$(MEDIA_STAMP): requirements-media.txt | $(VENV_STAMP)
-	$(PYTHON) -m pip install -r requirements-media.txt
-	touch $@
-
-media: verify-independent tools/render_media.py layout.png $(SOLUTION) $(REGIONS) $(PROTOCOL_PROOF) $(ARCHITECTURE) $(EASTER_EGGS) | $(MEDIA_STAMP)
-	$(PYTHON) tools/render_media.py
-	@for artifact in $(MEDIA_FULL_OUTPUTS); do \
-		test -s $$artifact || { echo "missing media artifact: $$artifact" >&2; exit 1; }; \
-	done
+verify-all: verify-extended verify-independent
+	@echo "Extended and KLayout verification stages passed"

@@ -12,6 +12,9 @@ from typing import Any, Iterable, Optional
 
 
 Logic = Optional[bool]
+# The loop exits as soon as asynchronous clear and preset values converge.
+# This cap turns an unexpected feedback path into a clear failure.
+MAX_ASYNC_SETTLE_PASSES = 4
 
 
 def logic_not(value: Logic) -> Logic:
@@ -132,11 +135,13 @@ class Simulator:
             if model["sequential"]:
                 self.sequential.append(instance)
                 self.state[instance["name"]] = None
-                metadata = next(iter(model["sequential"].values()))
+                sequential_spec = next(iter(model["sequential"].values()))
                 for condition in ("clear", "preset"):
                     key = (instance["cell"], condition)
-                    if condition in metadata and key not in self.async_expressions:
-                        self.async_expressions[key] = Expression(metadata[condition])
+                    if condition in sequential_spec and key not in self.async_expressions:
+                        self.async_expressions[key] = Expression(
+                            sequential_spec[condition]
+                        )
             else:
                 self.combinational.append(instance)
                 for pin, function in model["outputs"].items():
@@ -208,17 +213,17 @@ class Simulator:
 
     def _async_value(self, instance: dict[str, Any]) -> Logic:
         model = self.models[instance["cell"]]
-        metadata = next(iter(model["sequential"].values()))
+        sequential_spec = next(iter(model["sequential"].values()))
         pin_values = {
             pin: self.values.get(net) for pin, net in instance["pins"].items()
         }
-        if "clear" in metadata:
+        if "clear" in sequential_spec:
             clear = self.async_expressions[(instance["cell"], "clear")].evaluate(
                 pin_values
             )
             if clear is True:
                 return False
-        if "preset" in metadata:
+        if "preset" in sequential_spec:
             preset = self.async_expressions[(instance["cell"], "preset")].evaluate(
                 pin_values
             )
@@ -227,7 +232,7 @@ class Simulator:
         return self.state[instance["name"]]
 
     def settle(self, apply_async: bool = False) -> None:
-        for _ in range(4):
+        for _ in range(MAX_ASYNC_SETTLE_PASSES):
             self.values = self._evaluate_combinational()
             if not apply_async:
                 return

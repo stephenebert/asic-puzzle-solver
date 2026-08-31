@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the accepted serial-burst length under explicit clock protocols.
+"""Prove the accepted serial-input length under explicit clock protocols.
 
 The acceptance event used here is deliberately precise.  After three rising
 edges with ``rst_n=0`` and ``enable=0``, optionally apply one rising edge with
@@ -191,13 +191,13 @@ def concrete_replay(
     for _ in range(idle_edges):
         simulator.tick()
 
-    success_during_burst = []
+    success_during_enabled_sequence = []
     simulator.set_inputs(enable=True)
     for index, bit in enumerate(bits):
         simulator.set_inputs(I=bit)
         simulator.tick()
         if simulator.output("success") is True:
-            success_during_burst.append(index + 1)
+            success_during_enabled_sequence.append(index + 1)
 
     success_before_post_edge = simulator.output("success")
     simulator.set_inputs(enable=False, I=False)
@@ -219,16 +219,12 @@ def concrete_replay(
         simulator.tick()
 
     return {
-        "success_during_burst": success_during_burst,
+        "success_during_enabled_sequence": success_during_enabled_sequence,
         "success_before_post_edge": success_before_post_edge,
         "success_after_post_edge": success_after_post_edge,
         "output_hex": output.hex(),
         "output_text": output.decode("ascii", errors="replace"),
     }
-
-
-def status_name(status: z3.CheckSatResult) -> str:
-    return str(status)
 
 
 def analyze_protocol(
@@ -260,9 +256,9 @@ def analyze_protocol(
         records.append(
             {
                 "length": length,
-                "accepted_on_following_disabled_edge": status_name(status),
+                "accepted_on_following_disabled_edge": str(status),
                 "disabled_edge_check_seconds": elapsed,
-                "success_after_nth_enabled_edge": status_name(active_status),
+                "success_after_nth_enabled_edge": str(active_status),
                 "enabled_edge_check_seconds": active_elapsed,
             }
         )
@@ -274,7 +270,10 @@ def analyze_protocol(
         if active_status == z3.sat and first_success_on_enabled_edge is None:
             first_success_on_enabled_edge = length
 
-    require(minimum is not None, f"no accepted burst through N={minimum_search_max}")
+    require(
+        minimum is not None,
+        f"no accepted input sequence through N={minimum_search_max}",
+    )
     require(witness_at_minimum is not None, "minimum witness was not captured")
 
     minimum_formula = trace[minimum]["accepted_i0"]
@@ -310,7 +309,7 @@ def analyze_protocol(
         status, elapsed, model = solve_status(formula)
         entry: dict[str, Any] = {
             "length": length,
-            "status": status_name(status),
+            "status": str(status),
             "seconds": elapsed,
             "matching_star_battle_windows": [],
         }
@@ -332,7 +331,7 @@ def analyze_protocol(
             active_status in (z3.sat, z3.unsat),
             f"active-edge solver returned {active_status} at N={length}",
         )
-        entry["success_after_nth_enabled_edge"] = status_name(active_status)
+        entry["success_after_nth_enabled_edge"] = str(active_status)
         entry["enabled_edge_check_seconds"] = active_elapsed
         if active_status == z3.sat and first_success_on_enabled_edge is None:
             first_success_on_enabled_edge = length
@@ -347,13 +346,13 @@ def analyze_protocol(
             "1" if bit else "0" for bit in witness_at_minimum
         ),
         "minimum_witness_unique": alternate_status == z3.unsat,
-        "alternate_check_status": status_name(alternate_status),
+        "alternate_check_status": str(alternate_status),
         "alternate_check_seconds": alternate_seconds,
         "concrete_replay": replay,
         "length_checks": records,
         "disabled_edge_i_independent_through": len(trace) - 1,
         "disabled_edge_i_independence_seconds": post_i_independence_seconds,
-        "longer_bursts": characterizations,
+        "longer_enabled_sequences": characterizations,
     }
 
 
@@ -363,7 +362,7 @@ def add_window_characterization(
     variables: list[Any],
     regions: list[list[Any]],
 ) -> None:
-    for entry in protocol["longer_bursts"]:
+    for entry in protocol["longer_enabled_sequences"]:
         if entry["status"] != "sat":
             continue
         length = entry["length"]
@@ -474,7 +473,7 @@ def prove_unbounded_suffix_behavior(
         status, seconds = prove_equivalent(formula, rules)
         require(status == z3.unsat, f"failed unbounded obligation: {label}")
         obligation_results[label] = {
-            "counterexample_status": status_name(status),
+            "counterexample_status": str(status),
             "seconds": seconds,
         }
 
@@ -488,7 +487,7 @@ def prove_unbounded_suffix_behavior(
 
     return {
         "one_idle_vs_no_idle_initial_success_cone_difference": {
-            "status": status_name(idle_status),
+            "status": str(idle_status),
             "seconds": idle_seconds,
             "meaning": (
                 "UNSAT means the optional idle edge is a no-op on all 79 "
@@ -496,7 +495,7 @@ def prove_unbounded_suffix_behavior(
             ),
         },
         "terminal_fixed_point_difference": {
-            "status": status_name(fixed_status),
+            "status": str(fixed_status),
             "seconds": fixed_seconds,
             "meaning": (
                 "UNSAT means that, for every board and first suffix bit, every "
@@ -504,7 +503,7 @@ def prove_unbounded_suffix_behavior(
             ),
         },
         "success_after_121st_enabled_edge": {
-            "status": status_name(pre_success_status),
+            "status": str(pre_success_status),
             "seconds": pre_success_seconds,
         },
         "equivalence_obligations": obligation_results,
@@ -544,7 +543,7 @@ def main() -> int:
         "--max-length",
         type=int,
         default=130,
-        help="largest burst length to build and characterize",
+        help="largest enabled-input length to build and characterize",
     )
     args = parser.parse_args()
 
@@ -647,9 +646,12 @@ def main() -> int:
     )
 
     payload = {
+        "schema_version": 2,
         "theorem": {
             "reset_edges": RESET_EDGES,
-            "burst": "N consecutive rising edges with rst_n=1 and enable=1",
+            "enabled_sequence": (
+                "N consecutive rising edges with rst_n=1 and enable=1"
+            ),
             "acceptance": (
                 "success immediately after the first following rising edge with "
                 "rst_n=1 and enable=0"
@@ -658,7 +660,7 @@ def main() -> int:
             "minimum_accepted_length": BOARD_CELLS,
             "minimum_witness_unique": True,
             "first_possible_success_if_enable_stays_high": BOARD_CELLS + 1,
-            "longer_bursts": (
+            "longer_enabled_sequences": (
                 "for every N >= 121, success depends only on the first 121 bits; "
                 "the N-121 suffix bits are unconstrained"
             ),
@@ -670,7 +672,7 @@ def main() -> int:
                 "in concrete winning-witness regressions through N=130, the output generator "
                 "was not frozen: if readout began only after enable fell, extra enabled edges "
                 "had already advanced past leading ASCII bytes; deassert immediately after "
-                "bit 121 for a clean complete post-burst capture"
+                "bit 121 for a clean complete post-input capture"
             ),
         },
         "success_cone": symbolic.cone_stats,
