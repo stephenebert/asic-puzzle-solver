@@ -1,5 +1,11 @@
 # Jane Street ASIC Puzzle Solver
 
+<p align="center">
+  <img src="assets/jane_street_logo.svg" width="480" alt="Jane Street spiral artwork recovered from the puzzle GDS layout">
+</p>
+
+<p align="center"><em>Spiral artwork recovered from the metal-2 layer of the supplied GDS layout.</em></p>
+
 This project extracts a standard-cell netlist from `puzzle.gds` and recovers
 the unique serial input accepted by the circuit.
 
